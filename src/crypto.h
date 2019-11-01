@@ -1,7 +1,7 @@
 /*
  * crypto.h - Define the enryptor's interface
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2019, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -23,7 +23,9 @@
 #ifndef _CRYPTO_H
 #define _CRYPTO_H
 
+#ifndef __MINGW32__
 #include <sys/socket.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -34,7 +36,10 @@
 #include <inttypes.h>
 #endif
 
-/* Definations for mbedTLS */
+/* Definitions for libsodium */
+#include <sodium.h>
+typedef crypto_aead_aes256gcm_state aes256gcm_ctx;
+/* Definitions for mbedTLS */
 #include <mbedtls/cipher.h>
 #include <mbedtls/md.h>
 typedef mbedtls_cipher_info_t cipher_kt_t;
@@ -103,6 +108,7 @@ typedef struct {
     uint32_t init;
     uint64_t counter;
     cipher_evp_t *evp;
+    aes256gcm_ctx *aes256gcm_ctx;
     cipher_t *cipher;
     buffer_t *chunk;
     uint8_t salt[MAX_KEY_LENGTH];
@@ -113,13 +119,13 @@ typedef struct {
 typedef struct crypto {
     cipher_t *cipher;
 
-    int(*const encrypt_all)(buffer_t *, cipher_t *, size_t);
-    int(*const decrypt_all)(buffer_t *, cipher_t *, size_t);
-    int(*const encrypt)(buffer_t *, cipher_ctx_t *, size_t);
-    int(*const decrypt)(buffer_t *, cipher_ctx_t *, size_t);
+    int(*const encrypt_all) (buffer_t *, cipher_t *, size_t);
+    int(*const decrypt_all) (buffer_t *, cipher_t *, size_t);
+    int(*const encrypt) (buffer_t *, cipher_ctx_t *, size_t);
+    int(*const decrypt) (buffer_t *, cipher_ctx_t *, size_t);
 
-    void(*const ctx_init)(cipher_t *, cipher_ctx_t *, int);
-    void(*const ctx_release)(cipher_ctx_t *);
+    void(*const ctx_init) (cipher_t *, cipher_ctx_t *, int);
+    void(*const ctx_release) (cipher_ctx_t *);
 } crypto_t;
 
 int balloc(buffer_t *, size_t);
@@ -134,15 +140,15 @@ unsigned char *crypto_md5(const unsigned char *, size_t, unsigned char *);
 int crypto_derive_key(const char *, uint8_t *, size_t);
 int crypto_parse_key(const char *, uint8_t *, size_t);
 int crypto_hkdf(const mbedtls_md_info_t *md, const unsigned char *salt,
-                 int salt_len, const unsigned char *ikm, int ikm_len,
-                 const unsigned char *info, int info_len, unsigned char *okm,
-                 int okm_len);
+                int salt_len, const unsigned char *ikm, int ikm_len,
+                const unsigned char *info, int info_len, unsigned char *okm,
+                int okm_len);
 int crypto_hkdf_extract(const mbedtls_md_info_t *md, const unsigned char *salt,
-                         int salt_len, const unsigned char *ikm, int ikm_len,
-                         unsigned char *prk);
+                        int salt_len, const unsigned char *ikm, int ikm_len,
+                        unsigned char *prk);
 int crypto_hkdf_expand(const mbedtls_md_info_t *md, const unsigned char *prk,
-                        int prk_len, const unsigned char *info, int info_len,
-                        unsigned char *okm, int okm_len);
+                       int prk_len, const unsigned char *info, int info_len,
+                       unsigned char *okm, int okm_len);
 #ifdef SS_DEBUG
 void dump(char *tag, char *text, int len);
 #endif

@@ -36,13 +36,14 @@
 #include <stdio.h>
 #include <stdlib.h> /* malloc() */
 #include <string.h> /* strncpy() */
+#ifndef __MINGW32__
 #include <sys/socket.h>
+#endif
 
 #include "tls.h"
 #include "protocol.h"
 #include "utils.h"
 
-#define SERVER_NAME_LEN 256
 #define TLS_HEADER_LEN 5
 #define TLS_HANDSHAKE_CONTENT_TYPE 0x16
 #define TLS_HANDSHAKE_TYPE_CLIENT_HELLO 0x01
@@ -58,7 +59,7 @@ static int parse_extensions(const char *, size_t, char **);
 static int parse_server_name_extension(const char *, size_t, char **);
 
 static const protocol_t tls_protocol_st = {
-    .default_port =               443,
+    .default_port = 443,
     .parse_packet = &parse_tls_header,
 };
 const protocol_t *const tls_protocol = &tls_protocol_st;

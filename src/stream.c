@@ -1,7 +1,7 @@
 /*
  * stream.c - Manage stream ciphers
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2019, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -345,6 +345,10 @@ stream_encrypt_all(buffer_t *plaintext, cipher_t *cipher, size_t capacity)
     cipher_ctx_set_nonce(&cipher_ctx, nonce, nonce_len, 1);
     memcpy(ciphertext->data, nonce, nonce_len);
 
+#ifdef MODULE_REMOTE
+    ppbloom_add((void *)nonce, nonce_len);
+#endif
+
     if (cipher->method >= SALSA20) {
         crypto_stream_xor_ic((uint8_t *)(ciphertext->data + nonce_len),
                              (const uint8_t *)plaintext->data, (uint64_t)(plaintext->len),
@@ -399,6 +403,10 @@ stream_encrypt(buffer_t *plaintext, cipher_ctx_t *cipher_ctx, size_t capacity)
         memcpy(ciphertext->data, cipher_ctx->nonce, nonce_len);
         cipher_ctx->counter = 0;
         cipher_ctx->init    = 1;
+
+#ifdef MODULE_REMOTE
+        ppbloom_add((void *)cipher_ctx->nonce, nonce_len);
+#endif
     }
 
     if (cipher->method >= SALSA20) {
@@ -553,11 +561,6 @@ stream_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
                 return CRYPTO_ERROR;
             }
         }
-    } else if (cipher_ctx->init == 1) {
-        if (cipher->method >= RC4_MD5) {
-            ppbloom_add((void *)cipher_ctx->nonce, cipher->nonce_len);
-            cipher_ctx->init = 2;
-        }
     }
 
     if (ciphertext->len <= 0)
@@ -596,6 +599,18 @@ stream_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
     dump("PLAIN", plaintext->data, plaintext->len);
     dump("CIPHER", ciphertext->data, ciphertext->len);
 #endif
+
+    // Add to bloom filter
+    if (cipher_ctx->init == 1) {
+        if (cipher->method >= RC4_MD5) {
+            if (ppbloom_check((void *)cipher_ctx->nonce, cipher->nonce_len) == 1) {
+                LOGE("crypto: stream: repeat IV detected");
+                return CRYPTO_ERROR;
+            }
+            ppbloom_add((void *)cipher_ctx->nonce, cipher->nonce_len);
+            cipher_ctx->init = 2;
+        }
+    }
 
     brealloc(ciphertext, plaintext->len, capacity);
     memcpy(ciphertext->data, plaintext->data, plaintext->len);
@@ -670,8 +685,8 @@ stream_init(const char *pass, const char *key, const char *method)
                 break;
             }
         if (m >= STREAM_CIPHER_NUM) {
-            LOGE("Invalid cipher name: %s, use rc4-md5 instead", method);
-            m = RC4_MD5;
+            LOGE("Invalid cipher name: %s, use chacha20-ietf instead", method);
+            m = CHACHA20IETF;
         }
     }
     if (m == TABLE) {
@@ -680,4 +695,3 @@ stream_init(const char *pass, const char *key, const char *method)
     }
     return stream_key_init(m, pass, key);
 }
-
