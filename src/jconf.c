@@ -218,7 +218,9 @@ read_jconf(const char *file)
                         conf.remote_num = j + 1;
                     }
                 } else if (value->type == json_string) {
-                    parse_addr(to_string(value), conf.remote_addr);
+                    char* tmp_str = to_string(value);
+                    parse_addr(tmp_str, conf.remote_addr);
+                    ss_free(tmp_str);
                     conf.remote_num = 1;
                 }
             } else if (strcmp(name, "port_password") == 0) {
@@ -338,10 +340,17 @@ read_jconf(const char *file)
                     value, json_boolean,
                     "invalid config file: option 'no_delay' must be a boolean");
                 conf.no_delay = value->u.boolean;
+            } else if (strcmp(name, "tcp_tproxy") == 0) {
+                check_json_value_type(
+                    value, json_boolean,
+                    "invalid config file: option 'tcp_tproxy' must be a boolean");
+                conf.tcp_tproxy = value->u.boolean;
             } else if (strcmp(name, "workdir") == 0) {
                 conf.workdir = to_string(value);
             } else if (strcmp(name, "acl") == 0) {
                 conf.acl = to_string(value);
+            } else if (strcmp(name, "manager_address") == 0) {
+                conf.manager_address = to_string(value);
             }
         }
     } else {

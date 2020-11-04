@@ -150,6 +150,10 @@ set_nosigpipe(int socket_fd)
 #define IP_TRANSPARENT       19
 #endif
 
+#ifndef IPV6_TRANSPARENT
+#define IPV6_TRANSPARENT     75
+#endif
+
 #ifndef IP_RECVORIGDSTADDR
 #ifdef  IP_ORIGDSTADDR
 #define IP_RECVORIGDSTADDR   IP_ORIGDSTADDR
@@ -320,7 +324,7 @@ parse_udprelay_header(const char *buf, const size_t buf_len,
 }
 
 static char *
-get_addr_str(const struct sockaddr *sa)
+get_addr_str(const struct sockaddr *sa, bool has_port)
 {
     static char s[SS_ADDRSTRLEN];
     memset(s, 0, SS_ADDRSTRLEN);
@@ -352,8 +356,11 @@ get_addr_str(const struct sockaddr *sa)
     int addr_len = strlen(addr);
     int port_len = strlen(port);
     memcpy(s, addr, addr_len);
-    memcpy(s + addr_len + 1, port, port_len);
-    s[addr_len] = ':';
+
+    if (has_port) {
+        memcpy(s + addr_len + 1, port, port_len);
+        s[addr_len] = ':';
+    }
 
     return s;
 }
@@ -377,15 +384,17 @@ create_remote_socket(int ipv6)
         }
 #ifdef MODULE_REMOTE
         if (is_bind_local_addr) {
-            if (bind_to_addr(&local_addr_v6, remote_sock) == -1) {
-                ERROR("bind_to_addr");
-                FATAL("[udp] cannot bind remote");
-                return -1;
+            if (local_addr_v6.ss_family == AF_INET6) {
+                if (bind_to_addr(&local_addr_v6, remote_sock) == -1) {
+                    ERROR("bind_to_addr");
+                    FATAL("[udp] cannot bind socket");
+                    return -1;
+                }
             }
         } else {
 #endif
         if (bind(remote_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-            FATAL("[udp] cannot bind remote");
+            FATAL("[udp] cannot bind socket");
             return -1;
         }
 #ifdef MODULE_REMOTE
@@ -405,10 +414,12 @@ create_remote_socket(int ipv6)
         }
 #ifdef MODULE_REMOTE
         if (is_bind_local_addr) {
-            if (bind_to_addr(&local_addr_v4, remote_sock) == -1) {
-                ERROR("bind_to_addr");
-                FATAL("[udp] cannot bind remote");
-                return -1;
+            if (local_addr_v4.ss_family == AF_INET) {
+                if (bind_to_addr(&local_addr_v4, remote_sock) == -1) {
+                    ERROR("bind_to_addr");
+                    FATAL("[udp] cannot bind socket");
+                    return -1;
+                }
             }
         } else {
 #endif
@@ -492,24 +503,29 @@ create_server_socket(const char *host, const char *port)
         }
 #ifdef IP_TOS
         // Set QoS flag
-        int tos   = 46;
-        int proto = rp->ai_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6;
-        setsockopt(server_sock, proto, IP_TOS, &tos, sizeof(tos));
+        int tos   = 46 << 2;
+        int rc = setsockopt(server_sock, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+        if (rc < 0 && errno != ENOPROTOOPT) {
+            LOGE("setting ipv4 dscp failed: %d", errno);
+        }
+        rc = setsockopt(server_sock, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+        if (rc < 0 && errno != ENOPROTOOPT) {
+            LOGE("setting ipv6 dscp failed: %d", errno);
+        }
 #endif
 
 #ifdef MODULE_REDIR
-        if (setsockopt(server_sock, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt))) {
+        int sol    = rp->ai_family == AF_INET ? SOL_IP : SOL_IPV6;
+        int flag_t = rp->ai_family == AF_INET ? IP_TRANSPARENT : IPV6_TRANSPARENT;
+        int flag_r = rp->ai_family == AF_INET ? IP_RECVORIGDSTADDR : IPV6_RECVORIGDSTADDR;
+
+        if (setsockopt(server_sock, sol, flag_t, &opt, sizeof(opt))) {
             ERROR("[udp] setsockopt IP_TRANSPARENT");
             exit(EXIT_FAILURE);
         }
-        if (rp->ai_family == AF_INET) {
-            if (setsockopt(server_sock, SOL_IP, IP_RECVORIGDSTADDR, &opt, sizeof(opt))) {
-                FATAL("[udp] setsockopt IP_RECVORIGDSTADDR");
-            }
-        } else if (rp->ai_family == AF_INET6) {
-            if (setsockopt(server_sock, SOL_IPV6, IPV6_RECVORIGDSTADDR, &opt, sizeof(opt))) {
-                FATAL("[udp] setsockopt IPV6_RECVORIGDSTADDR");
-            }
+
+        if (setsockopt(server_sock, sol, flag_r, &opt, sizeof(opt))) {
+            FATAL("[udp] setsockopt IP_RECVORIGDSTADDR");
         }
 #endif
 
@@ -654,9 +670,15 @@ resolv_cb(struct sockaddr *addr, void *data)
 #endif
 #ifdef IP_TOS
                 // Set QoS flag
-                int tos   = 46;
-                int proto = addr->sa_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6;
-                setsockopt(remotefd, proto, IP_TOS, &tos, sizeof(tos));
+                int tos   = 46 << 2;
+                int rc = setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+                if (rc < 0 && errno != ENOPROTOOPT) {
+                    LOGE("setting ipv4 dscp failed: %d", errno);
+                }
+                rc = setsockopt(remotefd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+                if (rc < 0 && errno != ENOPROTOOPT) {
+                    LOGE("setting ipv6 dscp failed: %d", errno);
+                }
 #endif
 #ifdef SET_INTERFACE
                 if (query_ctx->server_ctx->iface) {
@@ -748,6 +770,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef MODULE_LOCAL
     int err = server_ctx->crypto->decrypt_all(buf, server_ctx->crypto->cipher, buf_size);
     if (err) {
+        LOGE("failed to handshake with %s: %s",
+                get_addr_str((struct sockaddr *)&src_addr, false), "suspicious UDP packet");
         // drop the packet silently
         goto CLEAN_UP;
     }
@@ -828,9 +852,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         ERROR("[udp] remote_recv_socket");
         goto CLEAN_UP;
     }
-    int opt = 1;
-    int sol = remote_ctx->src_addr.ss_family == AF_INET6 ? SOL_IPV6 : SOL_IP;
-    if (setsockopt(src_fd, sol, IP_TRANSPARENT, &opt, sizeof(opt))) {
+    int opt  = 1;
+    int sol  = remote_ctx->src_addr.ss_family == AF_INET6 ? SOL_IPV6 : SOL_IP;
+    int flag = remote_ctx->src_addr.ss_family == AF_INET6 ? IPV6_TRANSPARENT : IP_TRANSPARENT;
+    if (setsockopt(src_fd, sol, flag, &opt, sizeof(opt))) {
         ERROR("[udp] remote_recv_setsockopt");
         close(src_fd);
         goto CLEAN_UP;
@@ -842,9 +867,15 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
 #ifdef IP_TOS
     // Set QoS flag
-    int tos   = 46;
-    int proto = remote_ctx->src_addr.ss_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6;
-    setsockopt(src_fd, proto, IP_TOS, &tos, sizeof(tos));
+    int tos   = 46 << 2;
+    int rc = setsockopt(src_fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+    if (rc < 0 && errno != ENOPROTOOPT) {
+        LOGE("setting ipv4 dscp failed: %d", errno);
+    }
+    rc = setsockopt(src_fd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+    if (rc < 0 && errno != ENOPROTOOPT) {
+        LOGE("setting ipv6 dscp failed: %d", errno);
+    }
 #endif
     if (bind(src_fd, (struct sockaddr *)&dst_addr, remote_dst_addr_len) != 0) {
         ERROR("[udp] remote_recv_bind");
@@ -854,7 +885,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     int s = sendto(src_fd, buf->data, buf->len, 0,
                    (struct sockaddr *)&remote_ctx->src_addr, remote_src_addr_len);
-    if (s == -1) {
+    if (s == -1 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
         ERROR("[udp] remote_recv_sendto");
         close(src_fd);
         goto CLEAN_UP;
@@ -865,7 +896,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     int s = sendto(server_ctx->fd, buf->data, buf->len, 0,
                    (struct sockaddr *)&remote_ctx->src_addr, remote_src_addr_len);
-    if (s == -1) {
+    if (s == -1 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
         ERROR("[udp] remote_recv_sendto");
         goto CLEAN_UP;
     }
@@ -958,6 +989,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     int err = server_ctx->crypto->decrypt_all(buf, server_ctx->crypto->cipher, buf_size);
     if (err) {
+        LOGE("failed to handshake with %s: %s",
+                get_addr_str((struct sockaddr *)&src_addr, false), "suspicious UDP packet");
         // drop the packet silently
         goto CLEAN_UP;
     }
@@ -1126,12 +1159,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef MODULE_REDIR
             char src[SS_ADDRSTRLEN];
             char dst[SS_ADDRSTRLEN];
-            strcpy(src, get_addr_str((struct sockaddr *)&src_addr));
-            strcpy(dst, get_addr_str((struct sockaddr *)&dst_addr));
+            strcpy(src, get_addr_str((struct sockaddr *)&src_addr, true));
+            strcpy(dst, get_addr_str((struct sockaddr *)&dst_addr, true));
             LOGI("[%s] [udp] cache miss: %s <-> %s", s_port, dst, src);
 #else
             LOGI("[%s] [udp] cache miss: %s:%s <-> %s", s_port, host, port,
-                 get_addr_str((struct sockaddr *)&src_addr));
+                 get_addr_str((struct sockaddr *)&src_addr, true));
 #endif
         }
     } else {
@@ -1139,12 +1172,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef MODULE_REDIR
             char src[SS_ADDRSTRLEN];
             char dst[SS_ADDRSTRLEN];
-            strcpy(src, get_addr_str((struct sockaddr *)&src_addr));
-            strcpy(dst, get_addr_str((struct sockaddr *)&dst_addr));
+            strcpy(src, get_addr_str((struct sockaddr *)&src_addr, true));
+            strcpy(dst, get_addr_str((struct sockaddr *)&dst_addr, true));
             LOGI("[%s] [udp] cache hit: %s <-> %s", s_port, dst, src);
 #else
             LOGI("[%s] [udp] cache hit: %s:%s <-> %s", s_port, host, port,
-                 get_addr_str((struct sockaddr *)&src_addr));
+                 get_addr_str((struct sockaddr *)&src_addr, true));
 #endif
         }
     }
@@ -1175,8 +1208,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #endif
 #ifdef IP_TOS
         // Set QoS flag
-        int tos = 46;
-        setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+        int tos = 46 << 2;
+        int rc = setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+        if (rc < 0 && errno != ENOPROTOOPT) {
+            LOGE("setting ipv4 dscp failed: %d", errno);
+        }
+        rc = setsockopt(remotefd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+        if (rc < 0 && errno != ENOPROTOOPT) {
+            LOGE("setting ipv6 dscp failed: %d", errno);
+        }
 #endif
 #ifdef SET_INTERFACE
         if (server_ctx->iface) {
@@ -1264,9 +1304,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #endif
 #ifdef IP_TOS
                 // Set QoS flag
-                int tos   = 46;
-                int proto = dst_addr.ss_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6;
-                setsockopt(remotefd, proto, IP_TOS, &tos, sizeof(tos));
+                int tos   = 46 << 2;
+                int rc = setsockopt(remotefd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+                if (rc < 0 && errno != ENOPROTOOPT) {
+                    LOGE("setting ipv4 dscp failed: %d", errno);
+                }
+                rc = setsockopt(remotefd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+                if (rc < 0 && errno != ENOPROTOOPT) {
+                    LOGE("setting ipv6 dscp failed: %d", errno);
+                }
 #endif
 #ifdef SET_INTERFACE
                 if (server_ctx->iface) {
@@ -1308,12 +1354,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         }
     } else {
-        struct addrinfo hints;
-        memset(&hints, 0, sizeof(struct addrinfo));
-        hints.ai_family   = AF_UNSPEC;
-        hints.ai_socktype = SOCK_DGRAM;
-        hints.ai_protocol = IPPROTO_UDP;
-
         struct query_ctx *query_ctx = new_query_ctx(buf->data + addr_header_len,
                                                     buf->len - addr_header_len);
         query_ctx->server_ctx      = server_ctx;

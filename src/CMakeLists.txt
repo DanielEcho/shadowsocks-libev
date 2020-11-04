@@ -1,15 +1,12 @@
 # redir need linux/* stuff
 if (LINUX)
     option(WITH_SS_REDIR "Build ss-redir" ON)
+    option(WITH_SS_MANAGER "Build ss-manager" ON)
 else ()
     option(WITH_SS_REDIR "Build ss-redir" OFF)
+    option(WITH_SS_MANAGER "Build ss-manager" OFF)
 endif ()
 
-
-set(SS_SNI_SOURCE
-        http.c
-        tls.c
-        )
 
 set(SS_ACL_SOURCE
         acl.c
@@ -34,6 +31,9 @@ set(SS_SHARED_SOURCES
         json.c
         netutils.c
         )
+if (MINGW)
+set(SS_SHARED_SOURCES ${SS_SHARED_SOURCES} winsock.c)
+endif ()
 
 set(LIBSHADOWSOCKS_LIBEV_SOURCE
         ${SS_SHARED_SOURCES}
@@ -42,7 +42,6 @@ set(LIBSHADOWSOCKS_LIBEV_SOURCE
         local.c
         ${SS_CRYPTO_SOURCE}
         ${SS_PLUGIN_SOURCE}
-        ${SS_SNI_SOURCE}
         ${SS_ACL_SOURCE}
         )
 
@@ -68,7 +67,6 @@ set(SS_SERVER_SOURCE
         server.c
         ${SS_CRYPTO_SOURCE}
         ${SS_PLUGIN_SOURCE}
-        ${SS_SNI_SOURCE}
         ${SS_ACL_SOURCE}
         )
 
@@ -117,6 +115,11 @@ list(APPEND DEPS
         ${LIBMBEDTLS}
         ${LIBMBEDCRYPTO}
         )
+
+if (MINGW)
+list(APPEND DEPS ws2_32)
+add_compile_definitions(CARES_STATICLIB PCRE_STATIC)
+endif ()
 endif ()
 
 find_library(LIBSODIUM_SHARED sodium)
@@ -165,7 +168,11 @@ if (WITH_STATIC)
 # By default we use normal name for static, all shared targets will add a `-shared' suffix
 add_executable(ss-server ${SS_SERVER_SOURCE})
 add_executable(ss-tunnel ${SS_TUNNEL_SOURCE})
-add_executable(ss-manager ${SS_MANAGER_SOURCE})
+if (WITH_SS_MANAGER)
+    add_executable(ss-manager ${SS_MANAGER_SOURCE})
+else ()
+    add_executable(ss-manager EXCLUDE_FROM_ALL ${SS_MANAGER_SOURCE})
+endif ()
 add_executable(ss-local ${SS_LOCAL_SOURCE})
 if (WITH_SS_REDIR)
     add_executable(ss-redir ${SS_REDIR_SOURCE})
@@ -182,6 +189,8 @@ target_compile_definitions(ss-local PUBLIC -DMODULE_LOCAL)
 target_compile_definitions(ss-redir PUBLIC -DMODULE_REDIR)
 target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_LOCAL -DLIB_ONLY)
 
+target_include_directories(shadowsocks-libev PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 target_link_libraries(ss-server cork ipset ${DEPS})
 target_link_libraries(ss-tunnel cork ${DEPS})
 target_link_libraries(ss-manager m bloom cork ${LIBEV} ${LIBUDNS})
@@ -197,7 +206,11 @@ endif ()
 # For shared binary, we still use the same name as static, without `-shared', but will output to shared directory
 add_executable(ss-server-shared ${SS_SERVER_SOURCE})
 add_executable(ss-tunnel-shared ${SS_TUNNEL_SOURCE})
-add_executable(ss-manager-shared ${SS_MANAGER_SOURCE})
+if (WITH_SS_MANAGER)
+    add_executable(ss-manager-shared ${SS_MANAGER_SOURCE})
+else ()
+    add_executable(ss-manager-shared EXCLUDE_FROM_ALL ${SS_MANAGER_SOURCE})
+endif ()
 add_executable(ss-local-shared ${SS_LOCAL_SOURCE})
 if (WITH_SS_REDIR)
     add_executable(ss-redir-shared ${SS_REDIR_SOURCE})
@@ -211,7 +224,9 @@ target_compile_definitions(ss-tunnel-shared PUBLIC -DMODULE_TUNNEL)
 target_compile_definitions(ss-manager-shared PUBLIC -DMODULE_MANAGER)
 target_compile_definitions(ss-local-shared PUBLIC -DMODULE_LOCAL)
 target_compile_definitions(ss-redir-shared PUBLIC -DMODULE_REDIR)
-target_compile_definitions(shadowsocks-libev-shared PUBLIC -DMODULE_LOCAL)
+target_compile_definitions(shadowsocks-libev-shared PUBLIC -DMODULE_LOCAL -DLIB_ONLY)
+
+target_include_directories(shadowsocks-libev-shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(ss-server-shared ${DEPS_SHARED})
 target_link_libraries(ss-tunnel-shared ${DEPS_SHARED})

@@ -617,9 +617,6 @@ aead_chunk_decrypt(cipher_ctx_t *ctx, uint8_t *p, uint8_t *c, uint8_t *n,
 
     sodium_increment(n, nlen);
 
-    if (*clen > chunk_len)
-        memmove(c, c + chunk_len, *clen - chunk_len);
-
     *clen = *clen - chunk_len;
 
     return CRYPTO_OK;
@@ -656,12 +653,12 @@ aead_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
 
         memcpy(cipher_ctx->salt, cipher_ctx->chunk->data, salt_len);
 
-        aead_cipher_ctx_set_key(cipher_ctx, 0);
-
         if (ppbloom_check((void *)cipher_ctx->salt, salt_len) == 1) {
             LOGE("crypto: AEAD: repeat salt detected");
             return CRYPTO_ERROR;
         }
+
+        aead_cipher_ctx_set_key(cipher_ctx, 0);
 
         memmove(cipher_ctx->chunk->data, cipher_ctx->chunk->data + salt_len,
                 cipher_ctx->chunk->len - salt_len);
@@ -671,22 +668,27 @@ aead_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
     }
 
     size_t plen = 0;
+    size_t cidx = 0;
     while (cipher_ctx->chunk->len > 0) {
         size_t chunk_clen = cipher_ctx->chunk->len;
         size_t chunk_plen = 0;
         err = aead_chunk_decrypt(cipher_ctx,
                                  (uint8_t *)plaintext->data + plen,
-                                 (uint8_t *)cipher_ctx->chunk->data,
+                                 (uint8_t *)cipher_ctx->chunk->data + cidx,
                                  cipher_ctx->nonce, &chunk_plen, &chunk_clen);
         if (err == CRYPTO_ERROR) {
             return err;
         } else if (err == CRYPTO_NEED_MORE) {
             if (plen == 0)
                 return err;
-            else
+            else{
+                memmove((uint8_t *)cipher_ctx->chunk->data, 
+			(uint8_t *)cipher_ctx->chunk->data + cidx, chunk_clen);
                 break;
+            }
         }
         cipher_ctx->chunk->len = chunk_clen;
+        cidx += cipher_ctx->cipher->tag_len * 2 + CHUNK_SIZE_LEN + chunk_plen;
         plen                  += chunk_plen;
     }
     plaintext->len = plen;

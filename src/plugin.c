@@ -111,9 +111,7 @@ start_ss_plugin(const char *plugin,
 
     exec = cork_exec_new(plugin);
     cork_exec_add_param(exec, plugin);  // argv[0]
-    extern int fast_open;
-    if (fast_open)
-        cork_exec_add_param(exec, "--fast-open");
+
 #ifdef __ANDROID__
     extern int vpn;
     if (vpn)
@@ -272,7 +270,7 @@ start_plugin(const char *plugin,
         if (cwd) {
 #else
         char cwd[PATH_MAX];
-        if (!getcwd(cwd, PATH_MAX)) {
+        if (getcwd(cwd, PATH_MAX) != NULL) {
 #endif
             new_path_len = strlen(current_path) + strlen(cwd) + 2;
             new_path     = ss_malloc(new_path_len);
